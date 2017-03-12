@@ -97,7 +97,7 @@ instance arbInstruction :: (Arbitrary k, Arbitrary v) => Arbitrary (Instruction 
         k <- arbitrary
         pure (Delete k)
 
-runInstructions :: forall k v. (Ord k) => List (Instruction k v) -> M.Map k v -> M.Map k v
+runInstructions :: forall k v. Ord k => List (Instruction k v) -> M.Map k v -> M.Map k v
 runInstructions instrs t0 = foldl step t0 instrs
   where
   step tree (Insert k v) = M.insert k v tree
