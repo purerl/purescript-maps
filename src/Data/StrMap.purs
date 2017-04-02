@@ -1,7 +1,7 @@
--- | This module defines a type of native Javascript maps which
+-- | This module defines a type of native maps which
 -- | require the keys to be strings.
 -- |
--- | To maximize performance, Javascript objects are not wrapped,
+-- | To maximize performance, native objects are not wrapped,
 -- | and some native code is used even when it's not necessary.
 
 module Data.StrMap
@@ -32,54 +32,21 @@ module Data.StrMap
   , foldM
   , foldMaybe
   , all
-  , thawST
-  , freezeST
-  , runST
-  , pureST
   ) where
 
 import Prelude
 
-import Control.Monad.Eff (Eff, runPure)
-import Control.Monad.ST as ST
-
-import Data.Foldable (class Foldable, foldl, foldr, for_)
+import Data.Foldable (class Foldable, foldl, foldr)
 import Data.Function.Uncurried (Fn2, runFn2, Fn4, runFn4)
 import Data.List as L
 import Data.Maybe (Maybe(..), maybe, fromMaybe)
 import Data.Monoid (class Monoid, mempty)
-import Data.StrMap.ST as SM
 import Data.Traversable (class Traversable, traverse)
 import Data.Tuple (Tuple(..), uncurry)
 import Data.Unfoldable (class Unfoldable)
 
 -- | `StrMap a` represents a map from `String`s to values of type `a`.
 foreign import data StrMap :: * -> *
-
-foreign import _copyEff :: forall a b h r. a -> Eff (st :: ST.ST h | r) b
-
--- | Convert an immutable map into a mutable map
-thawST :: forall a h r. StrMap a -> Eff (st :: ST.ST h | r) (SM.STStrMap h a)
-thawST = _copyEff
-
--- | Convert a mutable map into an immutable map
-freezeST :: forall a h r. SM.STStrMap h a -> Eff (st :: ST.ST h | r) (StrMap a)
-freezeST = _copyEff
-
--- | Freeze a mutable map, creating an immutable map. Use this function as you would use
--- | `Prelude.runST` to freeze a mutable reference.
--- |
--- | The rank-2 type prevents the map from escaping the scope of `runST`.
-foreign import runST :: forall a r. (forall h. Eff (st :: ST.ST h | r) (SM.STStrMap h a)) -> Eff r (StrMap a)
-
-pureST :: forall a. (forall h e. Eff (st :: ST.ST h | e) (SM.STStrMap h a)) -> StrMap a
-pureST f = runPure (runST f)
-
-mutate :: forall a b. (forall h e. SM.STStrMap h a -> Eff (st :: ST.ST h | e) b) -> StrMap a -> StrMap a
-mutate f m = pureST do
-  s <- thawST m
-  _ <- f s
-  pure s
 
 foreign import _fmapStrMap :: forall a b. Fn2 (StrMap a) (a -> b) (StrMap b)
 
@@ -149,10 +116,7 @@ foreign import size :: forall a. StrMap a -> Number
 
 -- | Create a map with one key/value pair
 singleton :: forall a. String -> a -> StrMap a
-singleton k v = pureST do
-  s <- SM.new
-  _ <- SM.poke s k v
-  pure s
+singleton k v = insert k v empty
 
 foreign import _lookup :: forall a z. Fn4 z (a -> z) String (StrMap a) z
 
@@ -165,14 +129,12 @@ member :: forall a. String -> StrMap a -> Boolean
 member = runFn4 _lookup false (const true)
 
 -- | Insert a key and value into a map
-insert :: forall a. String -> a -> StrMap a -> StrMap a
-insert k v = mutate (\s -> void $ SM.poke s k v)
+foreign import insert :: forall a. String -> a -> StrMap a -> StrMap a
 
 foreign import _unsafeDeleteStrMap :: forall a. Fn2 (StrMap a) String (StrMap a)
 
 -- | Delete a key and value from a map
-delete :: forall a. String -> StrMap a -> StrMap a
-delete k = mutate (\s -> void $ SM.delete s k)
+foreign import delete :: forall a. String -> StrMap a -> StrMap a
 
 -- | Delete a key and value from a map, returning the value
 -- | as well as the subsequent map
@@ -191,20 +153,12 @@ update f k m = alter (maybe Nothing f) k m
 
 -- | Create a map from a foldable collection of key/value pairs
 fromFoldable :: forall f a. Foldable f => f (Tuple String a) -> StrMap a
-fromFoldable l = pureST (do
-  s <- SM.new
-  for_ l (\(Tuple k v) -> SM.poke s k v)
-  pure s)
-
-foreign import _lookupST :: forall a h r z. Fn4 z (a -> z) String (SM.STStrMap h a) (Eff (st :: ST.ST h | r) z)
+fromFoldable l = foldl (\m (Tuple k v) -> insert k v m) empty l
 
 -- | Create a map from a foldable collection of key/value pairs, using the
 -- | specified function to combine values for duplicate keys.
 fromFoldableWith :: forall f a. Foldable f => (a -> a -> a) -> f (Tuple String a) -> StrMap a
-fromFoldableWith f l = pureST (do
-  s <- SM.new
-  for_ l (\(Tuple k v) -> runFn4 _lookupST v (f v) k s >>= SM.poke s k)
-  pure s)
+fromFoldableWith f l = foldl (\m (Tuple k v) -> insert k (maybe v (f v) $ lookup k m) m) empty l
 
 foreign import _collect :: forall a b . (String -> a -> b) -> StrMap a -> Array b
 
@@ -224,8 +178,7 @@ values = L.fromFoldable <<< _collect (\_ v -> v)
 
 -- | Compute the union of two maps, preferring the first map in the case of
 -- | duplicate keys.
-union :: forall a. StrMap a -> StrMap a -> StrMap a
-union m = mutate (\s -> void $ foldM SM.poke s m)
+foreign import union :: forall a. StrMap a -> StrMap a -> StrMap a
 
 -- | Compute the union of a collection of maps
 unions :: forall a. L.List (StrMap a) -> StrMap a
@@ -237,8 +190,10 @@ foreign import _mapWithKey :: forall a b. Fn2 (StrMap a) (String -> a -> b) (Str
 mapWithKey :: forall a b. (String -> a -> b) -> StrMap a -> StrMap b
 mapWithKey f m = runFn2 _mapWithKey m f
 
+foreign import _append :: forall a. (a -> a -> a) -> StrMap a -> StrMap a -> StrMap a
+
 instance semigroupStrMap :: (Semigroup a) => Semigroup (StrMap a) where
-  append m1 m2 = mutate (\s1 -> void $ foldM (\s2 k v2 -> SM.poke s2 k (runFn4 _lookup v2 (\v1 -> v1 <> v2) k m2)) s1 m1) m2
+  append m1 m2 = _append (<>) m1 m2
 
 instance monoidStrMap :: (Semigroup a) => Monoid (StrMap a) where
   mempty = empty

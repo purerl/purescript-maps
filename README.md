@@ -5,6 +5,11 @@
 
 Purely-functional map data structures.
 
+## Erlang port note
+
+Due to lack of mutation Data.StrMap.ST is removed. Data.StrMap is implemented via
+Erlang native maps, while Data.Map is unchanged, implemented in pure PureScript.
+
 ## Installation
 
 ```
