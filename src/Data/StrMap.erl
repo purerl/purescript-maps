@@ -1,5 +1,5 @@
 -module(data_strMap@foreign).
--export(['_fmapStrMap'/0, '_foldM'/4, '_foldSCStrMap'/0, all/2, empty/0, size/1, '_lookup'/0, '_collect'/2, keys/1, '_mapWithKey'/0, insert/3, delete/2, '_unsafeDeleteStrMap'/0, union/2, '_append'/3]).
+-export(['_fmapStrMap'/0, '_foldM'/4, '_foldSCStrMap'/0, all/2, empty/0, size/1, '_lookup'/0, '_collect'/2, keys/1, '_mapWithKey'/0, '_filterWithKey'/0, insert/3, delete/2, '_unsafeDeleteStrMap'/0, union/2, '_append'/3]).
 
 '_fmapStrMap'() -> fun (M,F) -> maps:map(fun (_K,V) -> F(V) end, M) end.
 '_foldM'(Bind,F,Mz,M) ->
@@ -40,6 +40,8 @@ size(M) -> float(maps:size(M)).
 keys(M) -> array:from_list(maps:keys(M)).
 
 '_mapWithKey'() -> fun (M,F) -> maps:map(fun (K, V) -> (F(K))(V) end, M) end.
+
+'_filterWithKey'() -> fun (M,F) -> maps:filter(fun (K, V) -> (F(K))(V) end, M) end.
 
 insert(K,V,M) -> maps:put(K,V,M).
 

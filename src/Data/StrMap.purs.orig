@@ -39,10 +39,16 @@ module Data.StrMap
 
 import Prelude
 
+<<<<<<< HEAD
 import Data.Foldable (class Foldable, foldl, foldr)
+=======
 import Control.Monad.Eff (Eff, runPure, foreachE)
+import Control.Monad.ST as ST
+
 import Data.Array as A
 import Data.Eq (class Eq1)
+import Data.Foldable (class Foldable, foldl, foldr, for_)
+>>>>>>> origin/master
 import Data.Function.Uncurried (Fn2, runFn2, Fn4, runFn4)
 import Data.Maybe (Maybe(..), maybe, fromMaybe)
 import Data.Monoid (class Monoid, mempty)
@@ -131,7 +137,13 @@ foreign import size :: forall a. StrMap a -> Int
 
 -- | Create a map with one key/value pair
 singleton :: forall a. String -> a -> StrMap a
+<<<<<<< HEAD
 singleton k v = insert k v empty
+=======
+singleton k v = pureST do
+  s <- SM.new
+  SM.poke s k v
+>>>>>>> origin/master
 
 foreign import _lookup :: forall a z. Fn4 z (a -> z) String (StrMap a) z
 
@@ -143,8 +155,14 @@ lookup = runFn4 _lookup Nothing Just
 member :: forall a. String -> StrMap a -> Boolean
 member = runFn4 _lookup false (const true)
 
--- | Insert or replace a key/value pair in a map
+<<<<<<< HEAD
+-- | Insert a key and value into a map
 foreign import insert :: forall a. String -> a -> StrMap a -> StrMap a
+=======
+-- | Insert or replace a key/value pair in a map
+insert :: forall a. String -> a -> StrMap a -> StrMap a
+insert k v = mutate (\s -> void $ SM.poke s k v)
+>>>>>>> origin/master
 
 foreign import _unsafeDeleteStrMap :: forall a. Fn2 (StrMap a) String (StrMap a)
 
@@ -168,7 +186,16 @@ update f k m = alter (maybe Nothing f) k m
 
 -- | Create a map from a foldable collection of key/value pairs
 fromFoldable :: forall f a. Foldable f => f (Tuple String a) -> StrMap a
+<<<<<<< HEAD
 fromFoldable l = foldl (\m (Tuple k v) -> insert k v m) empty l
+=======
+fromFoldable l = pureST do
+  s <- SM.new
+  foreachE (A.fromFoldable l) \(Tuple k v) -> void (SM.poke s k v)
+  pure s
+
+foreign import _lookupST :: forall a h r z. Fn4 z (a -> z) String (SM.STStrMap h a) (Eff (st :: ST.ST h | r) z)
+>>>>>>> origin/master
 
 -- | Create a map from a foldable collection of key/value pairs, using the
 -- | specified function to combine values for duplicate keys.
@@ -219,12 +246,18 @@ instance semigroupStrMap :: (Semigroup a) => Semigroup (StrMap a) where
 instance monoidStrMap :: (Semigroup a) => Monoid (StrMap a) where
   mempty = empty
 
-foreign import _filterWithKey :: forall a. Fn2 (StrMap a) (String -> a -> Boolean) (StrMap a)
-
 -- | Filter out those key/value pairs of a map for which a predicate
 -- | fails to hold.
 filterWithKey :: forall a. (String -> a -> Boolean) -> StrMap a -> StrMap a
-filterWithKey predicate m = runFn2 _filterWithKey m predicate
+filterWithKey predicate m = pureST go
+  where
+  go :: forall h e. Eff (st :: ST.ST h | e) (SM.STStrMap h a)
+  go = do
+    m' <- SM.new
+    foldM step m' m
+
+    where
+    step acc k v = if predicate k v then SM.poke acc k v else pure acc
 
 -- | Filter out those key/value pairs of a map for which a predicate
 -- | on the key fails to hold.
