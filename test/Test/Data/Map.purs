@@ -1,28 +1,34 @@
 module Test.Data.Map where
 
 import Prelude
-import Data.List.NonEmpty as NEL
-import Data.Map as M
 import Control.Alt ((<|>))
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
 import Control.Monad.Eff.Random (RANDOM)
+import Data.Array as A
 import Data.Foldable (foldl, for_, all)
 import Data.Function (on)
 import Data.List (List(Cons), groupBy, length, nubBy, singleton, sort, sortBy)
+import Data.List.NonEmpty as NEL
+import Data.Map as M
+import Data.Map.Gen (genMap)
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Tuple (Tuple(..), fst)
+import Data.NonEmpty ((:|))
+import Data.Tuple (Tuple(..), fst, uncurry)
 import Partial.Unsafe (unsafePartial)
 import Test.QuickCheck ((<?>), (===), quickCheck, quickCheck')
 import Test.QuickCheck.Arbitrary (class Arbitrary, arbitrary)
+import Test.QuickCheck.Gen (elements, oneOf)
 
 newtype TestMap k v = TestMap (M.Map k v)
 
 instance arbTestMap :: (Eq k, Ord k, Arbitrary k, Arbitrary v) => Arbitrary (TestMap k v) where
-  arbitrary = TestMap <<< (M.fromFoldable :: List (Tuple k v) -> M.Map k v) <$> arbitrary
+  arbitrary = TestMap <$> genMap arbitrary arbitrary
 
 data SmallKey = A | B | C | D | E | F | G | H | I | J
+derive instance eqSmallKey :: Eq SmallKey
+derive instance ordSmallKey :: Ord SmallKey
 
 instance showSmallKey :: Show SmallKey where
   show A = "A"
@@ -36,48 +42,8 @@ instance showSmallKey :: Show SmallKey where
   show I = "I"
   show J = "J"
 
-instance eqSmallKey :: Eq SmallKey where
-  eq A A = true
-  eq B B = true
-  eq C C = true
-  eq D D = true
-  eq E E = true
-  eq F F = true
-  eq G G = true
-  eq H H = true
-  eq I I = true
-  eq J J = true
-  eq _ _ = false
-
-smallKeyToInt :: SmallKey -> Int
-smallKeyToInt A = 0
-smallKeyToInt B = 1
-smallKeyToInt C = 2
-smallKeyToInt D = 3
-smallKeyToInt E = 4
-smallKeyToInt F = 5
-smallKeyToInt G = 6
-smallKeyToInt H = 7
-smallKeyToInt I = 8
-smallKeyToInt J = 9
-
-instance ordSmallKey :: Ord SmallKey where
-  compare = compare `on` smallKeyToInt
-
 instance arbSmallKey :: Arbitrary SmallKey where
-  arbitrary = do
-    n <- arbitrary
-    pure case n of
-      _ | n < 0.1 -> A
-      _ | n < 0.2 -> B
-      _ | n < 0.3 -> C
-      _ | n < 0.4 -> D
-      _ | n < 0.5 -> E
-      _ | n < 0.6 -> F
-      _ | n < 0.7 -> G
-      _ | n < 0.8 -> H
-      _ | n < 0.9 -> I
-      _ -> J
+  arbitrary = elements $ A :| [B, C, D, E, F, G, H, I, J]
 
 data Instruction k v = Insert k v | Delete k
 
@@ -86,18 +52,9 @@ instance showInstruction :: (Show k, Show v) => Show (Instruction k v) where
   show (Delete k) = "Delete (" <> show k <> ")"
 
 instance arbInstruction :: (Arbitrary k, Arbitrary v) => Arbitrary (Instruction k v) where
-  arbitrary = do
-    b <- arbitrary
-    case b of
-      true -> do
-        k <- arbitrary
-        v <- arbitrary
-        pure (Insert k v)
-      false -> do
-        k <- arbitrary
-        pure (Delete k)
+  arbitrary = oneOf $ (Insert <$> arbitrary <*> arbitrary) :| [Delete <$> arbitrary]
 
-runInstructions :: forall k v. (Ord k) => List (Instruction k v) -> M.Map k v -> M.Map k v
+runInstructions :: forall k v. Ord k => List (Instruction k v) -> M.Map k v -> M.Map k v
 runInstructions instrs t0 = foldl step t0 instrs
   where
   step tree (Insert k v) = M.insert k v tree
@@ -112,13 +69,17 @@ number n = n
 smallKeyToNumberMap :: M.Map SmallKey Int -> M.Map SmallKey Int
 smallKeyToNumberMap m = m
 
-mapTests :: forall eff. Eff (console :: CONSOLE, random :: RANDOM, err :: EXCEPTION | eff) Unit
+mapTests :: forall eff. Eff (console :: CONSOLE, random :: RANDOM, exception :: EXCEPTION | eff) Unit
 mapTests = do
   -- Data.Map
 
   log "Test inserting into empty tree"
   quickCheck $ \k v -> M.lookup (smallKey k) (M.insert k v M.empty) == Just (number v)
     <?> ("k: " <> show k <> ", v: " <> show v)
+
+  log "Test inserting two values with same key"
+  quickCheck $ \k v1 v2 ->
+    M.lookup (smallKey k) (M.insert k v2 (M.insert k v1 M.empty)) == Just (number v2)
 
   log "Test delete after inserting"
   quickCheck $ \k v -> M.isEmpty (M.delete (smallKey k) (M.insert k (number v) M.empty))
@@ -315,3 +276,27 @@ mapTests = do
     toList = M.toUnfoldable :: forall k v. M.Map k v -> List (Tuple k v)
     resultViaLists = m # toList # map (\(Tuple k v) → Tuple k (f k v)) # M.fromFoldable
     in resultViaMapWithKey === resultViaLists
+
+  log "filterWithKey gives submap"
+  quickCheck $ \(TestMap s :: TestMap String Int) p ->
+                 M.isSubmap (M.filterWithKey p s) s
+
+  log "filterWithKey keeps those keys for which predicate is true"
+  quickCheck $ \(TestMap s :: TestMap String Int) p ->
+                 A.all (uncurry p) (M.toAscUnfoldable (M.filterWithKey p s) :: Array (Tuple String Int))
+
+  log "filterKeys gives submap"
+  quickCheck $ \(TestMap s :: TestMap String Int) p ->
+                 M.isSubmap (M.filterKeys p s) s
+
+  log "filterKeys keeps those keys for which predicate is true"
+  quickCheck $ \(TestMap s :: TestMap String Int) p ->
+                 A.all p (M.keys (M.filterKeys p s))
+
+  log "filter gives submap"
+  quickCheck $ \(TestMap s :: TestMap String Int) p ->
+                 M.isSubmap (M.filter p s) s
+
+  log "filter keeps those values for which predicate is true"
+  quickCheck $ \(TestMap s :: TestMap String Int) p ->
+                 A.all p (M.values (M.filter p s))

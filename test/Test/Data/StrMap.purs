@@ -6,17 +6,18 @@ import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
 import Control.Monad.Eff.Random (RANDOM)
-
+import Data.Array as A
 import Data.Foldable (foldl)
 import Data.Function (on)
-import Data.List (List(..), groupBy, sortBy, singleton, fromFoldable, zipWith)
+import Data.List as L
 import Data.List.NonEmpty as NEL
 import Data.Maybe (Maybe(..))
+import Data.NonEmpty ((:|))
 import Data.StrMap as M
-import Data.Tuple (Tuple(..), fst)
-
+import Data.StrMap.Gen (genStrMap)
+import Data.Traversable (sequence)
+import Data.Tuple (Tuple(..), fst, uncurry)
 import Partial.Unsafe (unsafePartial)
-
 import Test.QuickCheck ((<?>), quickCheck, quickCheck', (===))
 import Test.QuickCheck.Arbitrary (class Arbitrary, arbitrary)
 import Test.QuickCheck.Gen as Gen
@@ -24,7 +25,12 @@ import Test.QuickCheck.Gen as Gen
 newtype TestStrMap v = TestStrMap (M.StrMap v)
 
 instance arbTestStrMap :: (Arbitrary v) => Arbitrary (TestStrMap v) where
-  arbitrary = TestStrMap <<< (M.fromFoldable :: List (Tuple String v) -> M.StrMap v) <$> arbitrary
+  arbitrary = TestStrMap <$> genStrMap arbitrary arbitrary
+
+newtype SmallArray v = SmallArray (Array v)
+
+instance arbSmallArray :: (Arbitrary v) => Arbitrary (SmallArray v) where
+  arbitrary = SmallArray <$> Gen.resize 3 arbitrary
 
 data Instruction k v = Insert k v | Delete k
 
@@ -35,8 +41,7 @@ instance showInstruction :: (Show k, Show v) => Show (Instruction k v) where
 instance arbInstruction :: (Arbitrary v) => Arbitrary (Instruction String v) where
   arbitrary = do
     b <- arbitrary
-    k <- Gen.frequency (Tuple 10.0 (pure "hasOwnProperty"))
-                       (Tuple 50.0 arbitrary `Cons` Nil)
+    k <- Gen.frequency $ Tuple 10.0 (pure "hasOwnProperty") :| pure (Tuple 50.0 arbitrary)
     case b of
       true -> do
         v <- arbitrary
@@ -44,7 +49,7 @@ instance arbInstruction :: (Arbitrary v) => Arbitrary (Instruction String v) whe
       false -> do
         pure (Delete k)
 
-runInstructions :: forall v. List (Instruction String v) -> M.StrMap v -> M.StrMap v
+runInstructions :: forall v. L.List (Instruction String v) -> M.StrMap v -> M.StrMap v
 runInstructions instrs t0 = foldl step t0 instrs
   where
   step tree (Insert k v) = M.insert k v tree
@@ -53,11 +58,18 @@ runInstructions instrs t0 = foldl step t0 instrs
 number :: Int -> Int
 number n = n
 
-strMapTests :: forall eff. Eff (console :: CONSOLE, random :: RANDOM, err :: EXCEPTION | eff) Unit
+toAscArray :: forall a. M.StrMap a -> Array (Tuple String a)
+toAscArray = M.toAscUnfoldable
+
+strMapTests :: forall eff. Eff (console :: CONSOLE, random :: RANDOM, exception :: EXCEPTION | eff) Unit
 strMapTests = do
   log "Test inserting into empty tree"
   quickCheck $ \k v -> M.lookup k (M.insert k v M.empty) == Just (number v)
     <?> ("k: " <> show k <> ", v: " <> show v)
+
+  log "Test inserting two values with same key"
+  quickCheck $ \k v1 v2 ->
+    M.lookup k (M.insert k v2 (M.insert k v1 M.empty)) == Just (number v2)
 
   log "Test delete after inserting"
   quickCheck $ \k v -> M.isEmpty (M.delete k (M.insert k (number v) M.empty))
@@ -97,7 +109,31 @@ strMapTests = do
     in M.lookup k tree == Just v <?> ("instrs:\n  " <> show instrs <> "\nk:\n  " <> show k <> "\nv:\n  " <> show v)
 
   log "Singleton to list"
-  quickCheck $ \k v -> M.toList (M.singleton k v :: M.StrMap Int) == singleton (Tuple k v)
+  quickCheck $ \k v -> M.toUnfoldable (M.singleton k v :: M.StrMap Int) == L.singleton (Tuple k v)
+
+  log "filterWithKey gives submap"
+  quickCheck $ \(TestStrMap (s :: M.StrMap Int)) p ->
+                 M.isSubmap (M.filterWithKey p s) s
+
+  log "filterWithKey keeps those keys for which predicate is true"
+  quickCheck $ \(TestStrMap (s :: M.StrMap Int)) p ->
+                 A.all (uncurry p) (M.toAscUnfoldable (M.filterWithKey p s) :: Array (Tuple String Int))
+
+  log "filterKeys gives submap"
+  quickCheck $ \(TestStrMap (s :: M.StrMap Int)) p ->
+                 M.isSubmap (M.filterKeys p s) s
+
+  log "filterKeys keeps those keys for which predicate is true"
+  quickCheck $ \(TestStrMap (s :: M.StrMap Int)) p ->
+                 A.all p (M.keys (M.filterKeys p s))
+
+  log "filter gives submap"
+  quickCheck $ \(TestStrMap (s :: M.StrMap Int)) p ->
+                 M.isSubmap (M.filter p s) s
+
+  log "filter keeps those values for which predicate is true"
+  quickCheck $ \(TestStrMap (s :: M.StrMap Int)) p ->
+                 A.all p (M.values (M.filter p s))
 
   log "fromFoldable [] = empty"
   quickCheck (M.fromFoldable [] == (M.empty :: M.StrMap Unit)
@@ -121,18 +157,18 @@ strMapTests = do
     quickCheck (M.lookup "1" nums == Just 2  <?> "invalid lookup - 1")
     quickCheck (M.lookup "2" nums == Nothing <?> "invalid lookup - 2")
 
-  log "toList . fromFoldable = id"
-  quickCheck $ \arr -> let f x = M.toList (M.fromFoldable x)
-                       in f (f arr) == f (arr :: List (Tuple String Int)) <?> show arr
+  log "toUnfoldable . fromFoldable = id"
+  quickCheck $ \arr -> let f x = M.toUnfoldable (M.fromFoldable x)
+                       in f (f arr) == f (arr :: L.List (Tuple String Int)) <?> show arr
 
-  log "fromFoldable . toList = id"
+  log "fromFoldable . toUnfoldable = id"
   quickCheck $ \(TestStrMap m) ->
-    let f m1 = M.fromFoldable (M.toList m1) in
-    M.toList (f m) == M.toList (m :: M.StrMap Int) <?> show m
+    let f m1 = M.fromFoldable ((M.toUnfoldable m1) :: L.List (Tuple String Int)) in
+    M.toUnfoldable (f m) == (M.toUnfoldable m :: L.List (Tuple String Int)) <?> show m
 
   log "fromFoldableWith const = fromFoldable"
   quickCheck $ \arr -> M.fromFoldableWith const arr ==
-                       M.fromFoldable (arr :: List (Tuple String Int)) <?> show arr
+                       M.fromFoldable (arr :: L.List (Tuple String Int)) <?> show arr
 
   -- log "fromFoldableWith (<>) = fromFoldable . collapse with (<>) . group on fst"
   -- quickCheck $ \arr ->
@@ -159,8 +195,21 @@ strMapTests = do
   quickCheck $ \(TestStrMap m :: TestStrMap Int) -> let
     f k v = k <> show v
     resultViaMapWithKey = m # M.mapWithKey f
-    resultViaLists = m # M.toList # map (\(Tuple k v) → Tuple k (f k v)) # M.fromFoldable
+    resultViaLists = m # M.toUnfoldable # map (\(Tuple k v) → Tuple k (f k v)) # (M.fromFoldable :: forall a. L.List (Tuple String a) -> M.StrMap a)
     in resultViaMapWithKey === resultViaLists
+
+  log "sequence works (for m = Array)"
+  quickCheck \(TestStrMap mOfSmallArrays :: TestStrMap (SmallArray Int)) ->
+    let m                 = (\(SmallArray a) -> a) <$> mOfSmallArrays
+        Tuple keys values = A.unzip (toAscArray m)
+        resultViaArrays   = (M.fromFoldable <<< A.zip keys) <$> sequence values
+    in  A.sort (sequence m) === A.sort (resultViaArrays)
+
+  log "sequence works (for m = Maybe)"
+  quickCheck \(TestStrMap m :: TestStrMap (Maybe Int)) ->
+    let Tuple keys values = A.unzip (toAscArray m)
+        resultViaArrays   = (M.fromFoldable <<< A.zip keys) <$> sequence values
+    in  sequence m === resultViaArrays
 
   log "Bug #63: accidental observable mutation in foldMap"
   quickCheck \(TestStrMap m) ->
